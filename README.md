@@ -116,7 +116,8 @@ The workflow:
 1. checks out the repository;
 2. installs Temurin Java 21;
 3. enables the Maven dependency cache;
-4. runs `./mvnw --batch-mode clean verify` from `backend/`.
+4. ensures the Maven Wrapper is executable on the Linux runner;
+5. runs `./mvnw --batch-mode clean verify` from `backend/`.
 
 This gives the project a reproducible build gate from the first version.
 
@@ -247,7 +248,7 @@ The repository history is used to make the evolution of Aprovexa explicit: each 
 | PostgreSQL health | ✅ Local validation completed |
 | No business logic introduced | ✅ |
 | Local/internal documentation excluded from Git | ✅ |
-| GitHub Actions CI | ⏳ Pending first pull request |
+| GitHub Actions CI | ✅ `Backend CI / verify` passed on the V0 pull request |
 | Tag `v0.1.0` | ⏳ Pending CI and merge |
 
 ## Next milestone
