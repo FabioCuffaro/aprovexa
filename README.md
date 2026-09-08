@@ -249,8 +249,9 @@ The repository history is used to make the evolution of Aprovexa explicit: each 
 | No business logic introduced | ✅ |
 | Local/internal documentation excluded from Git | ✅ |
 | GitHub Actions CI | ✅ `Backend CI / verify` passed on the V0 pull request |
-| Tag `v0.1.0` | ⏳ Pending CI and merge |
+| Pull request merged into `main` | ✅ Completed |
+| Tag `v0.1.0` | ✅ Created after successful V0 validation |
 
 ## Next milestone
 
-After V0 is fully validated in GitHub, development can proceed to **V1 — Request Management REST API**, where the first real domain behaviour will be implemented.
+V0 is fully validated and closed. The next milestone is **V1 — Request Management REST API**, where the first real domain behaviour will be implemented. Development of V1 starts only after the explicit approval of this V0 closure.
