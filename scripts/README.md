@@ -1,5 +1,5 @@
 # Scripts
 
-Reserved for repeatable project-level scripts introduced when a block requires them.
+Reserved for repeatable project-level automation when a future block genuinely requires it.
 
-V0 keeps validation commands explicit in `docs/blocks/V0/README.md` rather than hiding them behind scripts.
+No executable project scripts are required in V1. Validation commands remain explicit in the root `README.md` so the development and verification flow stays transparent.
