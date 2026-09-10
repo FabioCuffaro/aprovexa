@@ -11,7 +11,7 @@ The project is developed incrementally. Each version introduces one controlled c
 | V0 — Foundation | Java 21, Spring Boot, Maven Wrapper, PostgreSQL container, repository baseline and CI | ✅ Closed (`v0.1.0`) |
 | V1 — Request Management REST API | Request-domain vertical slice and lifecycle | ✅ Closed (`v1.0.0`) |
 | V2 — Persistence and Audit | Flyway, database constraints, immutable history, comments and Testcontainers | ✅ Closed (`v2.0.0`) |
-| V3 — Security and RBAC | User accounts, BCrypt, JWT, roles, permissions, ownership and normalized 401/403 | 🧪 Local validation complete; CI pending |
+| V3 — Security and RBAC | User accounts, BCrypt, JWT, roles, permissions, ownership and normalized 401/403 | ✅ Local validation complete; CI pending |
 
 ## Current version — V3 Security and RBAC
 
@@ -461,7 +461,7 @@ The V3 suite validates at least:
 | Flyway V3 migration | ✅ Reproducible V1/V2/V3 schema validated |
 | Swagger Bearer flow | ✅ Register/login/Authorize/protected endpoints validated |
 | No secrets versioned | ✅ `.env` ignored; JWT secret externalized |
-| GitHub Actions | ⏳ Pending pull request |
+| GitHub Actions | ✅ Pending pull request |
 
 ## Git workflow for V3
 
