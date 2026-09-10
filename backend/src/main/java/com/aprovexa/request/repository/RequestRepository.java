@@ -22,4 +22,18 @@ public interface RequestRepository extends JpaRepository<Request, Long> {
             @Param("status") RequestStatus status,
             Pageable pageable
     );
+
+    @Query("""
+            select request
+            from Request request
+            where lower(request.requester) = lower(:requester)
+              and (:type is null or request.type = :type)
+              and (:status is null or request.status = :status)
+            """)
+    Page<Request> searchOwned(
+            @Param("requester") String requester,
+            @Param("type") RequestType type,
+            @Param("status") RequestStatus status,
+            Pageable pageable
+    );
 }

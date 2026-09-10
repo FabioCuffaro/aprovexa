@@ -6,12 +6,12 @@ import com.aprovexa.request.dto.PageResponse;
 import com.aprovexa.request.dto.RequestCommentResponse;
 import com.aprovexa.request.dto.RequestHistoryResponse;
 import com.aprovexa.request.dto.RequestResponse;
-import com.aprovexa.request.dto.TransitionRequest;
 import com.aprovexa.request.dto.UpdateRequestRequest;
 import com.aprovexa.request.model.RequestStatus;
 import com.aprovexa.request.model.RequestType;
 import com.aprovexa.request.service.RequestService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -35,7 +35,8 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/v1/requests")
 @Validated
-@Tag(name = "Requests", description = "Request management, audit history and comments")
+@Tag(name = "Requests", description = "Authenticated request management, audit history and comments")
+@SecurityRequirement(name = "bearerAuth")
 public class RequestController {
 
     private final RequestService requestService;
@@ -45,7 +46,7 @@ public class RequestController {
     }
 
     @PostMapping
-    @Operation(summary = "Create a request in CREATED status")
+    @Operation(summary = "Create a request owned by the authenticated user")
     public ResponseEntity<RequestResponse> create(@Valid @RequestBody CreateRequestRequest input) {
         RequestResponse created = requestService.create(input);
         return ResponseEntity
@@ -54,13 +55,13 @@ public class RequestController {
     }
 
     @GetMapping("/{id}")
-    @Operation(summary = "Get a request by id")
+    @Operation(summary = "Get a request if role/ownership policy allows it")
     public RequestResponse findById(@PathVariable Long id) {
         return requestService.findById(id);
     }
 
     @GetMapping
-    @Operation(summary = "List requests with pagination and optional type/status filters")
+    @Operation(summary = "List own requests for USER, or all requests for MANAGER/ADMIN")
     public PageResponse<RequestResponse> findAll(
             @RequestParam(required = false) RequestType type,
             @RequestParam(required = false) RequestStatus status,
@@ -73,7 +74,7 @@ public class RequestController {
     }
 
     @PutMapping("/{id}")
-    @Operation(summary = "Edit a CREATED request")
+    @Operation(summary = "Edit a CREATED request owned by the authenticated user")
     public RequestResponse update(
             @PathVariable Long id,
             @Valid @RequestBody UpdateRequestRequest input
@@ -82,50 +83,38 @@ public class RequestController {
     }
 
     @DeleteMapping("/{id}")
-    @Operation(summary = "Delete a CREATED request")
+    @Operation(summary = "Delete a CREATED request owned by the authenticated user")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         requestService.delete(id);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{id}/submit")
-    @Operation(summary = "Move a request from CREATED to IN_REVIEW and audit the actor")
-    public RequestResponse submit(
-            @PathVariable Long id,
-            @Valid @RequestBody TransitionRequest input
-    ) {
-        return requestService.submit(id, input);
+    @Operation(summary = "Submit an owned request; actor is taken from the JWT")
+    public RequestResponse submit(@PathVariable Long id) {
+        return requestService.submit(id);
     }
 
     @PostMapping("/{id}/approve")
-    @Operation(summary = "Approve an IN_REVIEW request and audit the actor")
-    public RequestResponse approve(
-            @PathVariable Long id,
-            @Valid @RequestBody TransitionRequest input
-    ) {
-        return requestService.approve(id, input);
+    @Operation(summary = "Approve an IN_REVIEW request as MANAGER/ADMIN")
+    public RequestResponse approve(@PathVariable Long id) {
+        return requestService.approve(id);
     }
 
     @PostMapping("/{id}/reject")
-    @Operation(summary = "Reject an IN_REVIEW request and audit the actor")
-    public RequestResponse reject(
-            @PathVariable Long id,
-            @Valid @RequestBody TransitionRequest input
-    ) {
-        return requestService.reject(id, input);
+    @Operation(summary = "Reject an IN_REVIEW request as MANAGER/ADMIN")
+    public RequestResponse reject(@PathVariable Long id) {
+        return requestService.reject(id);
     }
 
     @PostMapping("/{id}/cancel")
-    @Operation(summary = "Cancel an unresolved request and audit the actor")
-    public RequestResponse cancel(
-            @PathVariable Long id,
-            @Valid @RequestBody TransitionRequest input
-    ) {
-        return requestService.cancel(id, input);
+    @Operation(summary = "Cancel an owned unresolved request; actor is taken from the JWT")
+    public RequestResponse cancel(@PathVariable Long id) {
+        return requestService.cancel(id);
     }
 
     @PostMapping("/{id}/comments")
-    @Operation(summary = "Add a comment to a request")
+    @Operation(summary = "Add a comment; author is taken from the JWT")
     public ResponseEntity<RequestCommentResponse> addComment(
             @PathVariable Long id,
             @Valid @RequestBody CreateRequestCommentRequest input
@@ -137,7 +126,7 @@ public class RequestController {
     }
 
     @GetMapping("/{id}/comments")
-    @Operation(summary = "List request comments in chronological order")
+    @Operation(summary = "List comments if role/ownership policy allows it")
     public PageResponse<RequestCommentResponse> findComments(
             @PathVariable Long id,
             @RequestParam(defaultValue = "0") @Min(0) int page,
@@ -147,7 +136,7 @@ public class RequestController {
     }
 
     @GetMapping("/{id}/history")
-    @Operation(summary = "Get the immutable status transition history of a request")
+    @Operation(summary = "Get immutable history if role/ownership policy allows it")
     public List<RequestHistoryResponse> findHistory(@PathVariable Long id) {
         return requestService.findHistory(id);
     }

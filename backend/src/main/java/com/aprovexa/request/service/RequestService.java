@@ -1,6 +1,5 @@
 package com.aprovexa.request.service;
 
-import com.aprovexa.common.error.RequestNotFoundException;
 import com.aprovexa.request.comment.RequestComment;
 import com.aprovexa.request.comment.RequestCommentRepository;
 import com.aprovexa.request.dto.CreateRequestCommentRequest;
@@ -9,7 +8,6 @@ import com.aprovexa.request.dto.PageResponse;
 import com.aprovexa.request.dto.RequestCommentResponse;
 import com.aprovexa.request.dto.RequestHistoryResponse;
 import com.aprovexa.request.dto.RequestResponse;
-import com.aprovexa.request.dto.TransitionRequest;
 import com.aprovexa.request.dto.UpdateRequestRequest;
 import com.aprovexa.request.history.RequestHistory;
 import com.aprovexa.request.history.RequestHistoryRepository;
@@ -17,10 +15,15 @@ import com.aprovexa.request.model.Request;
 import com.aprovexa.request.model.RequestStatus;
 import com.aprovexa.request.model.RequestType;
 import com.aprovexa.request.repository.RequestRepository;
+import com.aprovexa.request.security.RequestAuthorizationService;
+import com.aprovexa.common.error.RequestNotFoundException;
+import com.aprovexa.security.CurrentUser;
+import com.aprovexa.security.CurrentUserProvider;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,31 +42,41 @@ public class RequestService {
     private final RequestRepository requestRepository;
     private final RequestHistoryRepository requestHistoryRepository;
     private final RequestCommentRepository requestCommentRepository;
+    private final CurrentUserProvider currentUserProvider;
+    private final RequestAuthorizationService authorizationService;
 
     public RequestService(
             RequestRepository requestRepository,
             RequestHistoryRepository requestHistoryRepository,
-            RequestCommentRepository requestCommentRepository
+            RequestCommentRepository requestCommentRepository,
+            CurrentUserProvider currentUserProvider,
+            RequestAuthorizationService authorizationService
     ) {
         this.requestRepository = requestRepository;
         this.requestHistoryRepository = requestHistoryRepository;
         this.requestCommentRepository = requestCommentRepository;
+        this.currentUserProvider = currentUserProvider;
+        this.authorizationService = authorizationService;
     }
 
     @Transactional
     public RequestResponse create(CreateRequestRequest input) {
+        CurrentUser user = currentUserProvider.get();
         Request request = new Request(
                 input.type(),
                 input.title().trim(),
                 input.description().trim(),
                 normalizeNullable(input.justification()),
-                input.requester().trim()
+                user.email()
         );
         return toResponse(requestRepository.save(request));
     }
 
     public RequestResponse findById(Long id) {
-        return toResponse(getEntity(id));
+        CurrentUser user = currentUserProvider.get();
+        Request request = getEntity(id);
+        authorizationService.requireCanRead(request, user);
+        return toResponse(request);
     }
 
     public PageResponse<RequestResponse> findAll(
@@ -74,19 +87,26 @@ public class RequestService {
             String sortBy,
             Sort.Direction direction
     ) {
+        CurrentUser user = currentUserProvider.get();
         String safeSortBy = validateSortField(sortBy);
         Sort sort = Sort.by(direction, safeSortBy);
         if (!"id".equals(safeSortBy)) {
             sort = sort.and(Sort.by(Sort.Direction.ASC, "id"));
         }
         Pageable pageable = PageRequest.of(page, size, sort);
-        Page<Request> result = requestRepository.search(type, status, pageable);
+
+        Page<Request> result = authorizationService.canReadAll(user)
+                ? requestRepository.search(type, status, pageable)
+                : requestRepository.searchOwned(user.email(), type, status, pageable);
+
         return PageResponse.from(result.map(this::toResponse));
     }
 
     @Transactional
     public RequestResponse update(Long id, UpdateRequestRequest input) {
+        CurrentUser user = currentUserProvider.get();
         Request request = getEntity(id);
+        authorizationService.requireCanManage(request, user);
         request.update(
                 input.type(),
                 input.title().trim(),
@@ -98,44 +118,62 @@ public class RequestService {
 
     @Transactional
     public void delete(Long id) {
+        CurrentUser user = currentUserProvider.get();
         Request request = getEntity(id);
+        authorizationService.requireCanManage(request, user);
         request.ensureCanBeDeleted();
         requestRepository.delete(request);
     }
 
     @Transactional
-    public RequestResponse submit(Long id, TransitionRequest input) {
-        return transition(id, input.actor(), Request::submit);
+    public RequestResponse submit(Long id) {
+        CurrentUser user = currentUserProvider.get();
+        Request request = getEntity(id);
+        authorizationService.requireCanManage(request, user);
+        return transition(request, user.email(), Request::submit);
     }
 
     @Transactional
-    public RequestResponse approve(Long id, TransitionRequest input) {
-        return transition(id, input.actor(), Request::approve);
+    @PreAuthorize("hasAuthority('REQUEST_REVIEW')")
+    public RequestResponse approve(Long id) {
+        CurrentUser user = currentUserProvider.get();
+        authorizationService.requireCanReview(user);
+        return transition(getEntity(id), user.email(), Request::approve);
     }
 
     @Transactional
-    public RequestResponse reject(Long id, TransitionRequest input) {
-        return transition(id, input.actor(), Request::reject);
+    @PreAuthorize("hasAuthority('REQUEST_REVIEW')")
+    public RequestResponse reject(Long id) {
+        CurrentUser user = currentUserProvider.get();
+        authorizationService.requireCanReview(user);
+        return transition(getEntity(id), user.email(), Request::reject);
     }
 
     @Transactional
-    public RequestResponse cancel(Long id, TransitionRequest input) {
-        return transition(id, input.actor(), Request::cancel);
+    public RequestResponse cancel(Long id) {
+        CurrentUser user = currentUserProvider.get();
+        Request request = getEntity(id);
+        authorizationService.requireCanManage(request, user);
+        return transition(request, user.email(), Request::cancel);
     }
 
     @Transactional
     public RequestCommentResponse addComment(Long id, CreateRequestCommentRequest input) {
+        CurrentUser user = currentUserProvider.get();
         Request request = getEntity(id);
+        authorizationService.requireCanComment(request, user);
         RequestComment comment = new RequestComment(
                 request,
-                input.author().trim(),
+                user.email(),
                 input.content().trim()
         );
         return toCommentResponse(requestCommentRepository.save(comment));
     }
 
     public PageResponse<RequestCommentResponse> findComments(Long id, int page, int size) {
-        ensureExists(id);
+        CurrentUser user = currentUserProvider.get();
+        Request request = getEntity(id);
+        authorizationService.requireCanComment(request, user);
         Pageable pageable = PageRequest.of(
                 page,
                 size,
@@ -149,14 +187,15 @@ public class RequestService {
     }
 
     public List<RequestHistoryResponse> findHistory(Long id) {
-        ensureExists(id);
+        CurrentUser user = currentUserProvider.get();
+        Request request = getEntity(id);
+        authorizationService.requireCanReadHistory(request, user);
         return requestHistoryRepository.findTimelineByRequestId(id).stream()
                 .map(this::toHistoryResponse)
                 .toList();
     }
 
-    private RequestResponse transition(Long id, String actor, Consumer<Request> transition) {
-        Request request = getEntity(id);
+    private RequestResponse transition(Request request, String actor, Consumer<Request> transition) {
         RequestStatus previousStatus = request.getStatus();
         transition.accept(request);
         RequestStatus newStatus = request.getStatus();
@@ -165,16 +204,10 @@ public class RequestService {
                 request,
                 previousStatus,
                 newStatus,
-                actor.trim()
+                actor
         ));
 
         return toResponse(request);
-    }
-
-    private void ensureExists(Long id) {
-        if (!requestRepository.existsById(id)) {
-            throw new RequestNotFoundException(id);
-        }
     }
 
     private Request getEntity(Long id) {
