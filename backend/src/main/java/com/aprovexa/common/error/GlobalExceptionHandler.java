@@ -6,6 +6,7 @@ import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -25,6 +26,36 @@ public class GlobalExceptionHandler {
             HttpServletRequest request
     ) {
         return build(HttpStatus.NOT_FOUND, "REQUEST_NOT_FOUND", exception.getMessage(), request, Map.of());
+    }
+
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleUserNotFound(
+            UserNotFoundException exception,
+            HttpServletRequest request
+    ) {
+        return build(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", exception.getMessage(), request, Map.of());
+    }
+
+    @ExceptionHandler(UserAlreadyExistsException.class)
+    public ResponseEntity<ApiErrorResponse> handleUserAlreadyExists(
+            UserAlreadyExistsException exception,
+            HttpServletRequest request
+    ) {
+        return build(HttpStatus.CONFLICT, "USER_ALREADY_EXISTS", exception.getMessage(), request, Map.of());
+    }
+
+    @ExceptionHandler(BadCredentialsException.class)
+    public ResponseEntity<ApiErrorResponse> handleBadCredentials(
+            BadCredentialsException exception,
+            HttpServletRequest request
+    ) {
+        return build(
+                HttpStatus.UNAUTHORIZED,
+                "AUTHENTICATION_FAILED",
+                "Email or password is incorrect",
+                request,
+                Map.of()
+        );
     }
 
     @ExceptionHandler(InvalidRequestStateException.class)

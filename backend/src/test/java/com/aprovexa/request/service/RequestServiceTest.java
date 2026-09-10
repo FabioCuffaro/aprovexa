@@ -1,16 +1,19 @@
 package com.aprovexa.request.service;
 
+import com.aprovexa.auth.model.Role;
 import com.aprovexa.common.error.RequestNotFoundException;
 import com.aprovexa.request.comment.RequestCommentRepository;
 import com.aprovexa.request.dto.CreateRequestCommentRequest;
 import com.aprovexa.request.dto.CreateRequestRequest;
-import com.aprovexa.request.dto.TransitionRequest;
 import com.aprovexa.request.history.RequestHistory;
 import com.aprovexa.request.history.RequestHistoryRepository;
 import com.aprovexa.request.model.Request;
 import com.aprovexa.request.model.RequestStatus;
 import com.aprovexa.request.model.RequestType;
 import com.aprovexa.request.repository.RequestRepository;
+import com.aprovexa.request.security.RequestAuthorizationService;
+import com.aprovexa.security.CurrentUser;
+import com.aprovexa.security.CurrentUserProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +31,7 @@ class RequestServiceTest {
     private RequestRepository requestRepository;
     private RequestHistoryRepository historyRepository;
     private RequestCommentRepository commentRepository;
+    private CurrentUserProvider currentUserProvider;
     private RequestService service;
 
     @BeforeEach
@@ -35,24 +39,32 @@ class RequestServiceTest {
         requestRepository = mock(RequestRepository.class);
         historyRepository = mock(RequestHistoryRepository.class);
         commentRepository = mock(RequestCommentRepository.class);
-        service = new RequestService(requestRepository, historyRepository, commentRepository);
+        currentUserProvider = mock(CurrentUserProvider.class);
+        when(currentUserProvider.get()).thenReturn(user("laura@example.com", Role.USER));
+
+        service = new RequestService(
+                requestRepository,
+                historyRepository,
+                commentRepository,
+                currentUserProvider,
+                new RequestAuthorizationService()
+        );
     }
 
     @Test
-    void createPersistsCreatedRequest() {
+    void createUsesAuthenticatedIdentityAsOwner() {
         when(requestRepository.save(any(Request.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         var response = service.create(new CreateRequestRequest(
                 RequestType.PURCHASE,
                 "  Development laptop  ",
                 "  Laptop required for backend development  ",
-                "  Current equipment is insufficient  ",
-                "  Laura  "
+                "  Current equipment is insufficient  "
         ));
 
         assertThat(response.status()).isEqualTo(RequestStatus.CREATED);
         assertThat(response.title()).isEqualTo("Development laptop");
-        assertThat(response.requester()).isEqualTo("Laura");
+        assertThat(response.requester()).isEqualTo("laura@example.com");
         verify(requestRepository).save(any(Request.class));
     }
 
@@ -66,41 +78,47 @@ class RequestServiceTest {
     }
 
     @Test
-    void submitDelegatesLifecycleRuleAndWritesHistory() {
-        Request request = new Request(
-                RequestType.ACCESS,
-                "Repository access",
-                "Access is needed for the assigned project",
-                null,
-                "Laura"
-        );
+    void submitWritesAuthenticatedUserToHistory() {
+        Request request = ownedRequest("laura@example.com");
         when(requestRepository.findById(1L)).thenReturn(Optional.of(request));
+        when(historyRepository.save(any(RequestHistory.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        var response = service.submit(1L, new TransitionRequest("  Laura  "));
+        var response = service.submit(1L);
 
         assertThat(response.status()).isEqualTo(RequestStatus.IN_REVIEW);
-        verify(historyRepository).save(any(RequestHistory.class));
+        verify(historyRepository).save(org.mockito.ArgumentMatchers.argThat(history ->
+                history.getChangedBy().equals("laura@example.com")
+                        && history.getPreviousStatus() == RequestStatus.CREATED
+                        && history.getNewStatus() == RequestStatus.IN_REVIEW
+        ));
     }
 
     @Test
-    void addCommentPersistsCommentAgainstExistingRequest() {
-        Request request = new Request(
-                RequestType.PURCHASE,
-                "Development laptop",
-                "Laptop required for backend development work",
-                null,
-                "Laura"
-        );
+    void addCommentUsesAuthenticatedUserAsAuthor() {
+        Request request = ownedRequest("laura@example.com");
         when(requestRepository.findById(1L)).thenReturn(Optional.of(request));
         when(commentRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
         var response = service.addComment(1L, new CreateRequestCommentRequest(
-                "  Manager  ",
                 "  Please include the expected delivery date.  "
         ));
 
-        assertThat(response.author()).isEqualTo("Manager");
+        assertThat(response.author()).isEqualTo("laura@example.com");
         assertThat(response.content()).isEqualTo("Please include the expected delivery date.");
         verify(commentRepository).save(any());
+    }
+
+    private CurrentUser user(String email, Role role) {
+        return new CurrentUser(email, role, role.permissions());
+    }
+
+    private Request ownedRequest(String email) {
+        return new Request(
+                RequestType.ACCESS,
+                "Repository access",
+                "Access is needed for the assigned project",
+                null,
+                email
+        );
     }
 }

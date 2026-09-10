@@ -23,11 +23,6 @@ public record CreateRequestRequest(
 
         @Size(max = 1000)
         @Schema(example = "The current device cannot run the required development environment.")
-        String justification,
-
-        @NotBlank
-        @Size(max = 120)
-        @Schema(example = "Laura")
-        String requester
+        String justification
 ) {
 }
