@@ -2,139 +2,178 @@
 
 Aprovexa is an internal enterprise platform for managing employee requests and approval workflows in a traceable, auditable way.
 
-The project is being developed incrementally. Each version introduces a controlled technical or functional capability and is validated before the next version begins.
+The project is developed incrementally. Each version introduces one controlled capability, is validated locally and in CI, and is merged only after its acceptance criteria are satisfied.
 
-## Current version
+## Version history
 
-### V0 — Foundation (`v0.1.0`)
+| Version | Scope | Status |
+| --- | --- | --- |
+| V0 — Foundation | Java 21, Spring Boot, Maven Wrapper, PostgreSQL container, repository baseline and CI | ✅ Closed (`v0.1.0`) |
+| V1 — Request Management REST API | First request-domain vertical slice | 🚧 In validation |
 
-V0 establishes the technical baseline of the repository. It intentionally contains **no business logic** yet.
+## Current version — V1 Request Management REST API
 
-The objective of this version is to make the project reproducible from a clean clone and to validate the basic development environment before introducing the request domain.
+V1 introduces the first real business behaviour of Aprovexa in a single Spring Boot backend. The objective is to stabilize the request lifecycle before adding audit maturity, security, Kafka or the Angular client.
 
-## Technology baseline
+### Technology used in V1
 
-| Area | Technology |
-| --- | --- |
-| Language | Java 21 |
-| Backend | Spring Boot 4.1.1 |
-| Build | Maven Wrapper |
-| Local database | PostgreSQL 17 |
-| Local infrastructure | Docker Compose |
-| CI | GitHub Actions |
+- Java 21
+- Spring Boot 4.1.1
+- Spring Web MVC
+- Jakarta Bean Validation
+- Spring Data JPA
+- PostgreSQL 17
+- springdoc OpenAPI / Swagger UI
+- JUnit 5, Mockito and AssertJ
+- GitHub Actions
 
-Persistence integration, security, Kafka, Angular, batch processing and distributed services will be introduced in later versions instead of being added prematurely.
+No Spring Security, Kafka, Flyway, microservices or Angular code is introduced in this version.
 
 ## Repository structure
 
 ```text
 aprovexa/
-├── backend/                 Spring Boot backend
-├── frontend/                Reserved for the Angular client
-├── infrastructure/          Infrastructure assets as the project evolves
-├── scripts/                 Reusable project scripts
-├── .github/workflows/       Continuous integration workflows
-├── .env.example             Local environment variable template
-├── docker-compose.yml       Local PostgreSQL infrastructure
-└── README.md                Public project documentation
+├── backend/
+│   ├── src/main/java/com/aprovexa/
+│   │   ├── common/error/        Shared API error handling
+│   │   ├── config/              OpenAPI configuration
+│   │   └── request/             V1 request feature
+│   │       ├── controller/      REST endpoints
+│   │       ├── dto/             API input/output contracts
+│   │       ├── model/           JPA entity, type and lifecycle state
+│   │       ├── repository/      Spring Data persistence
+│   │       └── service/         Application operations
+│   └── src/test/java/com/aprovexa/
+├── frontend/                    Reserved for V11
+├── infrastructure/
+├── scripts/
+├── .github/workflows/
+├── .env.example
+├── docker-compose.yml
+└── README.md
 ```
 
-Internal working documentation is intentionally kept outside Git versioning.
+Internal working documentation is intentionally excluded from Git.
 
-## V0 implementation
+## Request model
 
-### 1. Backend initialization
+A request starts in `CREATED` and supports the following types:
 
-The backend was initialized with Spring Initializr using:
+- `VACATION`
+- `PURCHASE`
+- `ACCESS`
+- `INCIDENT`
+- `OTHER`
 
-- Maven
-- Java
-- Java 21
-- Spring Boot 4.1.1
-- Group: `com.aprovexa`
-- Artifact: `backend`
-- Packaging: `jar`
-- Spring Web MVC
-
-The generated Maven Wrapper is committed so the project does not depend on a globally installed Maven version.
-
-The backend version for this foundation is:
+Lifecycle:
 
 ```text
-0.1.0-SNAPSHOT
+CREATED --submit--> IN_REVIEW --approve--> APPROVED
+   |                    |
+   |                    +--reject-----> REJECTED
+   |
+   +--cancel--------------------------> CANCELLED
+
+IN_REVIEW --cancel--------------------> CANCELLED
 ```
 
-### 2. Repository foundation
+### V1 business rules
 
-The initial monorepo structure was prepared for the planned evolution of the platform:
+- New requests always start in `CREATED`.
+- Only `CREATED` requests can be edited or deleted.
+- `submit` only accepts `CREATED` requests.
+- `approve` and `reject` only accept `IN_REVIEW` requests.
+- `cancel` accepts unresolved requests (`CREATED` or `IN_REVIEW`).
+- An operation that is valid conceptually but incompatible with the current state returns HTTP `409 Conflict`.
+- Request entities are never returned directly by the REST API; DTOs define the public contract.
 
-- `backend/` contains the current Spring Boot application.
-- `frontend/` is reserved for the Angular client that will be introduced later.
-- `infrastructure/` is reserved for infrastructure-specific assets.
-- `scripts/` is reserved for reusable local or CI scripts.
-- `.github/workflows/` contains repository automation.
+## REST API
 
-No future framework or service has been initialized merely to fill these directories.
+Base path:
 
-### 3. Local configuration
+```text
+/api/v1/requests
+```
 
-A `.env.example` file documents the variables required by local infrastructure without committing real credentials.
+| Method | Endpoint | Behaviour |
+| --- | --- | --- |
+| `POST` | `/api/v1/requests` | Create a request (`201`) |
+| `GET` | `/api/v1/requests/{id}` | Retrieve one request (`200` / `404`) |
+| `GET` | `/api/v1/requests` | Paginated list with `type` and `status` filters |
+| `PUT` | `/api/v1/requests/{id}` | Edit a `CREATED` request |
+| `DELETE` | `/api/v1/requests/{id}` | Delete a `CREATED` request (`204`) |
+| `POST` | `/api/v1/requests/{id}/submit` | `CREATED → IN_REVIEW` |
+| `POST` | `/api/v1/requests/{id}/approve` | `IN_REVIEW → APPROVED` |
+| `POST` | `/api/v1/requests/{id}/reject` | `IN_REVIEW → REJECTED` |
+| `POST` | `/api/v1/requests/{id}/cancel` | unresolved → `CANCELLED` |
 
-Create the local file with:
+List query parameters:
 
-**Windows PowerShell**
+```text
+type      optional RequestType
+status    optional RequestStatus
+page      default 0
+size      default 20, maximum 100
+sortBy    default createdAt
+direction default DESC
+```
+
+A secondary `id ASC` sort is added when needed so pagination remains deterministic for rows with the same primary sort value.
+
+## HTTP behaviour
+
+V1 normalizes the main response codes:
+
+- `200 OK` — successful reads, updates and transitions
+- `201 Created` — request creation
+- `204 No Content` — deletion
+- `400 Bad Request` — validation, malformed JSON, invalid enum/query values
+- `404 Not Found` — unknown request id
+- `409 Conflict` — invalid lifecycle transition or operation for the current state
+
+Validation errors use a structured payload containing a stable error code and field-level details.
+
+## PostgreSQL persistence
+
+Start PostgreSQL from the repository root:
 
 ```powershell
-Copy-Item .env.example .env
+docker compose up -d postgres
+docker compose ps
 ```
 
-**Linux / macOS / Git Bash**
+The local Spring profile connects to:
 
-```bash
-cp .env.example .env
+```text
+jdbc:postgresql://localhost:5432/aprovexa
 ```
 
-The real `.env` file is ignored by Git.
+V1 deliberately uses:
 
-### 4. PostgreSQL with Docker Compose
+```properties
+spring.jpa.hibernate.ddl-auto=update
+```
 
-V0 provides a local PostgreSQL 17 container with:
+This is **temporary for V1**. V2 replaces automatic schema management with explicit, versioned Flyway migrations and PostgreSQL integration tests.
 
-- dedicated database and user configured through environment variables;
-- persistent Docker volume;
-- explicit healthcheck using `pg_isready`;
-- configurable host port.
+## Run V1 locally
 
-At this stage the Spring Boot application **does not connect to PostgreSQL yet**. Database integration belongs to the persistence phase of the project.
+### 1. Start PostgreSQL
 
-### 5. Continuous integration
-
-A minimal GitHub Actions workflow validates the backend on pull requests and on pushes to `main` that affect backend or workflow files.
-
-The workflow:
-
-1. checks out the repository;
-2. installs Temurin Java 21;
-3. enables the Maven dependency cache;
-4. ensures the Maven Wrapper is executable on the Linux runner;
-5. runs `./mvnw --batch-mode clean verify` from `backend/`.
-
-This gives the project a reproducible build gate from the first version.
-
-## Local validation performed for V0
-
-The following checks were executed locally before preparing the version for GitHub.
-
-### Java runtime
+From the repository root:
 
 ```powershell
-java -version
+docker compose up -d postgres
+docker compose exec postgres pg_isready -U aprovexa -d aprovexa
 ```
 
-**Expected:** Java 21.  
-**Status:** validated locally.
+Expected readiness message contains:
 
-### Maven build and tests
+```text
+accepting connections
+```
+
+### 2. Build and test
 
 From `backend/`:
 
@@ -142,116 +181,116 @@ From `backend/`:
 .\mvnw.cmd clean verify
 ```
 
-**Expected:** Maven finishes with `BUILD SUCCESS`.  
-**Status:** validated locally.
+Expected:
 
-### Spring Boot startup
+```text
+BUILD SUCCESS
+```
 
-From IntelliJ IDEA or from `backend/`:
+### 3. Start Spring Boot
+
+From IntelliJ IDEA, run `BackendApplication`, or from `backend/`:
 
 ```powershell
 .\mvnw.cmd spring-boot:run
 ```
 
-**Expected:** the Spring application context starts successfully and embedded Tomcat listens on port `8080`.  
-**Status:** validated locally.
+The application runs on:
 
-V0 does not expose business endpoints, so receiving `404` at `/` is expected at this stage.
-
-### Docker Compose configuration
-
-From the repository root:
-
-```powershell
-docker compose config
+```text
+http://localhost:8080
 ```
 
-**Expected:** Compose resolves the configuration without YAML or environment interpolation errors.  
-**Status:** validated locally.
+### 4. Open Swagger UI
 
-### PostgreSQL startup
-
-```powershell
-docker compose up -d postgres
-docker compose ps
+```text
+http://localhost:8080/swagger-ui.html
 ```
 
-**Expected:** `aprovexa-postgres` reaches a healthy state.  
-**Status:** validated locally.
+OpenAPI JSON:
 
-Direct database readiness check:
-
-```powershell
-docker compose exec postgres pg_isready -U aprovexa -d aprovexa
+```text
+http://localhost:8080/v3/api-docs
 ```
 
-**Expected:** PostgreSQL reports `accepting connections`.  
-**Status:** validated locally.
+## Example — purchase request
 
-Stop the local infrastructure without deleting the volume:
+Create:
 
-```powershell
-docker compose down
+```json
+{
+  "type": "PURCHASE",
+  "title": "Development laptop",
+  "description": "Laptop required for backend development work",
+  "justification": "Current equipment is insufficient",
+  "requester": "Laura"
+}
 ```
 
-## Repository hygiene checks
+Expected initial status:
 
-Before every commit, the repository is checked for local files, generated artifacts and credentials.
-
-Useful commands:
-
-```powershell
-git status
-git diff
-git diff --cached --check
-git diff --cached --name-only
+```text
+CREATED
 ```
 
-The following must never be committed:
+Then execute:
 
-- `.env`
-- `.idea/`
-- `backend/target/`
-- local/internal project documentation
-- credentials, tokens or secrets
+```text
+POST /api/v1/requests/{id}/submit
+POST /api/v1/requests/{id}/approve
+```
 
-## Git workflow for V0
+Expected lifecycle:
+
+```text
+CREATED → IN_REVIEW → APPROVED
+```
+
+Calling `approve` directly from `CREATED` must return `409 Conflict`.
+
+## Automated tests included in V1
+
+- Request lifecycle unit tests.
+- Invalid transition tests.
+- Service tests with mocked persistence.
+- MVC controller tests for `201`, `400` and `404` behaviour.
+
+The database itself is still validated manually against PostgreSQL in V1. Repository integration tests with real PostgreSQL/Testcontainers are introduced in V2 as planned.
+
+## V1 validation status
+
+| Check | Status |
+| --- | --- |
+| Request lifecycle tests | ✅ Passed locally via `mvnw clean verify` |
+| Controller tests | ✅ Passed locally via `mvnw clean verify` |
+| `mvnw clean verify` | ✅ `BUILD SUCCESS` |
+| PostgreSQL startup | ✅ PostgreSQL healthy and JPA/Hikari connection verified |
+| Java 21 runtime | ✅ IntelliJ runtime corrected and verified on Java 21.0.12 |
+| Swagger UI / OpenAPI | ✅ Swagger UI loaded and request endpoints discovered by springdoc |
+| CRUD through Swagger | ⏳ Pending manual validation |
+| Valid transitions | ✅ `CREATED → IN_REVIEW → APPROVED` validated in Swagger |
+| Invalid transition → `409` | ✅ Re-approving an `APPROVED` request correctly returned `409 Conflict` |
+| Pagination and filters | ⏳ Pending manual validation |
+| GitHub Actions | ⏳ Pending pull request |
+
+## Git workflow for V1
 
 Development branch:
 
 ```text
-feature/v0-foundation
+feature/v1-request-management-rest-api
 ```
 
-Foundation commit:
+Planned main implementation commit:
 
 ```text
-chore(v0): establish project foundation
+feat(v1): implement request management API
 ```
 
-Version tag after the pull request is validated and merged:
+Target tag after all validation and merge steps succeed:
 
 ```text
-v0.1.0
+v1.0.0
 ```
 
-The repository history is used to make the evolution of Aprovexa explicit: each version is implemented, tested and reviewed independently before moving to the next one.
-
-## V0 acceptance status
-
-| Check | Status |
-| --- | --- |
-| Java 21 available | ✅ Local validation completed |
-| Maven Wrapper build | ✅ Local validation completed |
-| Spring Boot startup | ✅ Local validation completed |
-| Docker Compose configuration | ✅ Local validation completed |
-| PostgreSQL health | ✅ Local validation completed |
-| No business logic introduced | ✅ |
-| Local/internal documentation excluded from Git | ✅ |
-| GitHub Actions CI | ✅ `Backend CI / verify` passed on the V0 pull request |
-| Pull request merged into `main` | ✅ Completed |
-| Tag `v0.1.0` | ✅ Created after successful V0 validation |
-
-## Next milestone
-
-V0 is fully validated and closed. The next milestone is **V1 — Request Management REST API**, where the first real domain behaviour will be implemented. Development of V1 starts only after the explicit approval of this V0 closure.
+V1 is not considered closed until local tests, manual API checks, CI and the final README state are all validated.
