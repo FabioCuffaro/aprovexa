@@ -1,7 +1,12 @@
 package com.aprovexa.request.service;
 
 import com.aprovexa.common.error.RequestNotFoundException;
+import com.aprovexa.request.comment.RequestCommentRepository;
+import com.aprovexa.request.dto.CreateRequestCommentRequest;
 import com.aprovexa.request.dto.CreateRequestRequest;
+import com.aprovexa.request.dto.TransitionRequest;
+import com.aprovexa.request.history.RequestHistory;
+import com.aprovexa.request.history.RequestHistoryRepository;
 import com.aprovexa.request.model.Request;
 import com.aprovexa.request.model.RequestStatus;
 import com.aprovexa.request.model.RequestType;
@@ -20,18 +25,22 @@ import static org.mockito.Mockito.when;
 
 class RequestServiceTest {
 
-    private RequestRepository repository;
+    private RequestRepository requestRepository;
+    private RequestHistoryRepository historyRepository;
+    private RequestCommentRepository commentRepository;
     private RequestService service;
 
     @BeforeEach
     void setUp() {
-        repository = mock(RequestRepository.class);
-        service = new RequestService(repository);
+        requestRepository = mock(RequestRepository.class);
+        historyRepository = mock(RequestHistoryRepository.class);
+        commentRepository = mock(RequestCommentRepository.class);
+        service = new RequestService(requestRepository, historyRepository, commentRepository);
     }
 
     @Test
     void createPersistsCreatedRequest() {
-        when(repository.save(any(Request.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(requestRepository.save(any(Request.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         var response = service.create(new CreateRequestRequest(
                 RequestType.PURCHASE,
@@ -44,12 +53,12 @@ class RequestServiceTest {
         assertThat(response.status()).isEqualTo(RequestStatus.CREATED);
         assertThat(response.title()).isEqualTo("Development laptop");
         assertThat(response.requester()).isEqualTo("Laura");
-        verify(repository).save(any(Request.class));
+        verify(requestRepository).save(any(Request.class));
     }
 
     @Test
     void findByIdThrowsWhenRequestDoesNotExist() {
-        when(repository.findById(99L)).thenReturn(Optional.empty());
+        when(requestRepository.findById(99L)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.findById(99L))
                 .isInstanceOf(RequestNotFoundException.class)
@@ -57,7 +66,7 @@ class RequestServiceTest {
     }
 
     @Test
-    void submitDelegatesLifecycleRuleToEntity() {
+    void submitDelegatesLifecycleRuleAndWritesHistory() {
         Request request = new Request(
                 RequestType.ACCESS,
                 "Repository access",
@@ -65,10 +74,33 @@ class RequestServiceTest {
                 null,
                 "Laura"
         );
-        when(repository.findById(1L)).thenReturn(Optional.of(request));
+        when(requestRepository.findById(1L)).thenReturn(Optional.of(request));
 
-        var response = service.submit(1L);
+        var response = service.submit(1L, new TransitionRequest("  Laura  "));
 
         assertThat(response.status()).isEqualTo(RequestStatus.IN_REVIEW);
+        verify(historyRepository).save(any(RequestHistory.class));
+    }
+
+    @Test
+    void addCommentPersistsCommentAgainstExistingRequest() {
+        Request request = new Request(
+                RequestType.PURCHASE,
+                "Development laptop",
+                "Laptop required for backend development work",
+                null,
+                "Laura"
+        );
+        when(requestRepository.findById(1L)).thenReturn(Optional.of(request));
+        when(commentRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        var response = service.addComment(1L, new CreateRequestCommentRequest(
+                "  Manager  ",
+                "  Please include the expected delivery date.  "
+        ));
+
+        assertThat(response.author()).isEqualTo("Manager");
+        assertThat(response.content()).isEqualTo("Please include the expected delivery date.");
+        verify(commentRepository).save(any());
     }
 }

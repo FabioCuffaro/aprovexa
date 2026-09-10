@@ -9,25 +9,24 @@ The project is developed incrementally. Each version introduces one controlled c
 | Version | Scope | Status |
 | --- | --- | --- |
 | V0 — Foundation | Java 21, Spring Boot, Maven Wrapper, PostgreSQL container, repository baseline and CI | ✅ Closed (`v0.1.0`) |
-| V1 — Request Management REST API | First request-domain vertical slice | 🚧 In validation |
+| V1 — Request Management REST API | First request-domain vertical slice | ✅ Closed (`v1.0.0`) |
+| V2 — Persistence and Audit | Flyway, database constraints, immutable history, comments and Testcontainers | 🟡 Local validation complete; PR/CI pending |
 
-## Current version — V1 Request Management REST API
+## Current version — V2 Persistence and Audit
 
-V1 introduces the first real business behaviour of Aprovexa in a single Spring Boot backend. The objective is to stabilize the request lifecycle before adding audit maturity, security, Kafka or the Angular client.
+V2 makes PostgreSQL an explicit part of the application design. Hibernate no longer creates or updates the schema. Database evolution is owned by Flyway migrations, state transitions are recorded in an immutable audit history, comments are persisted, and repository/integration behaviour is tested against a real PostgreSQL container.
 
-### Technology used in V1
+### Technology added in V2
 
-- Java 21
-- Spring Boot 4.1.1
-- Spring Web MVC
-- Jakarta Bean Validation
-- Spring Data JPA
-- PostgreSQL 17
-- springdoc OpenAPI / Swagger UI
-- JUnit 5, Mockito and AssertJ
-- GitHub Actions
+- Flyway migrations
+- PostgreSQL constraints and indexes
+- Immutable `request_history`
+- Persistent `request_comments`
+- Explicit JPQL repository queries
+- Testcontainers 2.x with PostgreSQL 17
+- Spring Boot Testcontainers service connections
 
-No Spring Security, Kafka, Flyway, microservices or Angular code is introduced in this version.
+Security, JWT, RBAC and authenticated identities are deliberately not introduced until V3.
 
 ## Repository structure
 
@@ -35,16 +34,26 @@ No Spring Security, Kafka, Flyway, microservices or Angular code is introduced i
 aprovexa/
 ├── backend/
 │   ├── src/main/java/com/aprovexa/
-│   │   ├── common/error/        Shared API error handling
-│   │   ├── config/              OpenAPI configuration
-│   │   └── request/             V1 request feature
-│   │       ├── controller/      REST endpoints
-│   │       ├── dto/             API input/output contracts
-│   │       ├── model/           JPA entity, type and lifecycle state
-│   │       ├── repository/      Spring Data persistence
-│   │       └── service/         Application operations
+│   │   ├── common/error/
+│   │   ├── config/
+│   │   └── request/
+│   │       ├── comment/          Comment entity and repository
+│   │       ├── controller/       REST API
+│   │       ├── dto/              Request, audit and comment contracts
+│   │       ├── history/          Immutable transition history
+│   │       ├── model/            Request aggregate and lifecycle
+│   │       ├── repository/       Request persistence queries
+│   │       └── service/          Transactional use cases
+│   ├── src/main/resources/
+│   │   └── db/migration/         Versioned Flyway SQL
 │   └── src/test/java/com/aprovexa/
-├── frontend/                    Reserved for V11
+│       ├── request/
+│       │   ├── controller/
+│       │   ├── model/
+│       │   ├── persistence/      PostgreSQL/Testcontainers tests
+│       │   └── service/
+│       └── support/              Testcontainers configuration
+├── frontend/                     Reserved for V11
 ├── infrastructure/
 ├── scripts/
 ├── .github/workflows/
@@ -55,125 +64,199 @@ aprovexa/
 
 Internal working documentation is intentionally excluded from Git.
 
-## Request model
+## Database ownership — Flyway
 
-A request starts in `CREATED` and supports the following types:
+V2 disables Hibernate schema generation:
 
-- `VACATION`
-- `PURCHASE`
-- `ACCESS`
-- `INCIDENT`
-- `OTHER`
-
-Lifecycle:
-
-```text
-CREATED --submit--> IN_REVIEW --approve--> APPROVED
-   |                    |
-   |                    +--reject-----> REJECTED
-   |
-   +--cancel--------------------------> CANCELLED
-
-IN_REVIEW --cancel--------------------> CANCELLED
+```properties
+spring.jpa.hibernate.ddl-auto=none
 ```
 
-### V1 business rules
+Schema evolution lives in:
 
-- New requests always start in `CREATED`.
-- Only `CREATED` requests can be edited or deleted.
-- `submit` only accepts `CREATED` requests.
-- `approve` and `reject` only accept `IN_REVIEW` requests.
-- `cancel` accepts unresolved requests (`CREATED` or `IN_REVIEW`).
-- An operation that is valid conceptually but incompatible with the current state returns HTTP `409 Conflict`.
-- Request entities are never returned directly by the REST API; DTOs define the public contract.
+```text
+backend/src/main/resources/db/migration/
+├── V1__create_requests.sql
+└── V2__persistence_audit.sql
+```
+
+`V1__create_requests.sql` represents the request table baseline. `V2__persistence_audit.sql` adds explicit constraints and indexes plus the audit and comment tables.
+
+### Migration bridge from V1
+
+Local V1 databases may already contain the `requests` table because V1 temporarily used Hibernate `ddl-auto=update`. The local profile therefore enables:
+
+```properties
+spring.flyway.baseline-on-migrate=true
+spring.flyway.baseline-version=1
+```
+
+Behaviour:
+
+- empty schema → Flyway executes V1 and V2;
+- existing non-empty V1 schema without Flyway metadata → Flyway records baseline `1` and applies V2.
+
+For the cleanest V2 validation, reset the local PostgreSQL volume and let Flyway create everything from zero.
+
+## V2 database model
+
+### `requests`
+
+Contains request state and content. V2 adds database-level checks for:
+
+- allowed request types;
+- allowed lifecycle states;
+- title, description and requester lengths;
+- timestamp consistency;
+- justification maximum length.
+
+Indexes support the main filtered/paginated access paths.
+
+### `request_history`
+
+Each successful lifecycle transition stores:
+
+```text
+request_id
+previous_status
+new_status
+changed_by
+changed_at
+```
+
+History is append-only. Two layers protect it:
+
+1. the JPA entity is marked `@Immutable` and exposes no update/delete use case;
+2. PostgreSQL has a trigger that rejects `UPDATE` and `DELETE` on `request_history`.
+
+The foreign key uses `ON DELETE RESTRICT`. A request that already has transition history cannot be removed directly from the database.
+
+### `request_comments`
+
+Stores comments associated with a request:
+
+```text
+request_id
+author
+content
+created_at
+```
+
+Comments are returned chronologically and paginated with a deterministic secondary `id ASC` sort.
+
+## Transactional audit
+
+Lifecycle transitions and their history row are stored inside the same Spring transaction.
+
+Conceptually:
+
+```text
+load request
+    ↓
+validate transition
+    ↓
+change request status
+    ↓
+insert request_history
+    ↓
+COMMIT both
+```
+
+If the history insert fails, the request status change is rolled back. V2 includes an integration test specifically for this behaviour.
 
 ## REST API
 
-Base path:
+Base path remains:
 
 ```text
 /api/v1/requests
 ```
 
+### Request lifecycle
+
 | Method | Endpoint | Behaviour |
 | --- | --- | --- |
-| `POST` | `/api/v1/requests` | Create a request (`201`) |
-| `GET` | `/api/v1/requests/{id}` | Retrieve one request (`200` / `404`) |
-| `GET` | `/api/v1/requests` | Paginated list with `type` and `status` filters |
+| `POST` | `/api/v1/requests` | Create request |
+| `GET` | `/api/v1/requests/{id}` | Get request |
+| `GET` | `/api/v1/requests` | Filtered/paginated list |
 | `PUT` | `/api/v1/requests/{id}` | Edit a `CREATED` request |
-| `DELETE` | `/api/v1/requests/{id}` | Delete a `CREATED` request (`204`) |
-| `POST` | `/api/v1/requests/{id}/submit` | `CREATED → IN_REVIEW` |
-| `POST` | `/api/v1/requests/{id}/approve` | `IN_REVIEW → APPROVED` |
-| `POST` | `/api/v1/requests/{id}/reject` | `IN_REVIEW → REJECTED` |
-| `POST` | `/api/v1/requests/{id}/cancel` | unresolved → `CANCELLED` |
+| `DELETE` | `/api/v1/requests/{id}` | Delete a `CREATED` request |
+| `POST` | `/api/v1/requests/{id}/submit` | Submit and write history |
+| `POST` | `/api/v1/requests/{id}/approve` | Approve and write history |
+| `POST` | `/api/v1/requests/{id}/reject` | Reject and write history |
+| `POST` | `/api/v1/requests/{id}/cancel` | Cancel and write history |
 
-List query parameters:
+V2 requires an explicit actor for every state transition because authentication does not exist until V3:
+
+```json
+{
+  "actor": "Laura"
+}
+```
+
+This temporary API contract is replaced by the authenticated user identity when security is introduced.
+
+### History
 
 ```text
-type      optional RequestType
-status    optional RequestStatus
-page      default 0
-size      default 20, maximum 100
-sortBy    default createdAt
-direction default DESC
+GET /api/v1/requests/{id}/history
 ```
 
-A secondary `id ASC` sort is added when needed so pagination remains deterministic for rows with the same primary sort value.
+Returns transitions in chronological order.
 
-## HTTP behaviour
+### Comments
 
-V1 normalizes the main response codes:
-
-- `200 OK` — successful reads, updates and transitions
-- `201 Created` — request creation
-- `204 No Content` — deletion
-- `400 Bad Request` — validation, malformed JSON, invalid enum/query values
-- `404 Not Found` — unknown request id
-- `409 Conflict` — invalid lifecycle transition or operation for the current state
-
-Validation errors use a structured payload containing a stable error code and field-level details.
-
-## PostgreSQL persistence
-
-Start PostgreSQL from the repository root:
-
-```powershell
-docker compose up -d postgres
-docker compose ps
-```
-
-The local Spring profile connects to:
+Create:
 
 ```text
-jdbc:postgresql://localhost:5432/aprovexa
+POST /api/v1/requests/{id}/comments
 ```
 
-V1 deliberately uses:
-
-```properties
-spring.jpa.hibernate.ddl-auto=update
+```json
+{
+  "author": "Manager",
+  "content": "Please confirm the expected delivery date."
+}
 ```
 
-This is **temporary for V1**. V2 replaces automatic schema management with explicit, versioned Flyway migrations and PostgreSQL integration tests.
+List:
 
-## Run V1 locally
+```text
+GET /api/v1/requests/{id}/comments?page=0&size=20
+```
 
-### 1. Start PostgreSQL
+## Custom request search
+
+`RequestRepository` now uses one explicit JPQL query with optional `type` and `status` filters. Pagination and sorting remain controlled by `Pageable`.
+
+Supported sort fields remain:
+
+```text
+id
+createdAt
+updatedAt
+title
+status
+type
+```
+
+A secondary `id ASC` order is added whenever `id` is not the primary sort field.
+
+## Run V2 locally
+
+### Recommended clean migration validation
 
 From the repository root:
 
 ```powershell
+docker compose down -v
 docker compose up -d postgres
-docker compose exec postgres pg_isready -U aprovexa -d aprovexa
+docker compose ps
 ```
 
-Expected readiness message contains:
+`down -v` is intentional for this one validation: it removes the V1 development volume so Flyway can prove that it can build the complete schema from an empty database.
 
-```text
-accepting connections
-```
-
-### 2. Build and test
+### Build and run all tests
 
 From `backend/`:
 
@@ -181,116 +264,105 @@ From `backend/`:
 .\mvnw.cmd clean verify
 ```
 
-Expected:
+V2 integration tests require Docker because Testcontainers launches a real PostgreSQL 17 container.
+
+Expected final result:
 
 ```text
 BUILD SUCCESS
 ```
 
-### 3. Start Spring Boot
-
-From IntelliJ IDEA, run `BackendApplication`, or from `backend/`:
+### Start the backend
 
 ```powershell
 .\mvnw.cmd spring-boot:run
 ```
 
-The application runs on:
+or run `BackendApplication` from IntelliJ IDEA using Java 21.
 
-```text
-http://localhost:8080
-```
-
-### 4. Open Swagger UI
+Swagger:
 
 ```text
 http://localhost:8080/swagger-ui.html
 ```
 
-OpenAPI JSON:
+## Inspect Flyway and audit data
 
-```text
-http://localhost:8080/v3/api-docs
+List Flyway migrations:
+
+```powershell
+docker compose exec postgres psql -U aprovexa -d aprovexa -c "SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
 ```
 
-## Example — purchase request
+Inspect tables:
 
-Create:
-
-```json
-{
-  "type": "PURCHASE",
-  "title": "Development laptop",
-  "description": "Laptop required for backend development work",
-  "justification": "Current equipment is insufficient",
-  "requester": "Laura"
-}
+```powershell
+docker compose exec postgres psql -U aprovexa -d aprovexa -c "\dt"
 ```
 
-Expected initial status:
+Inspect request history:
 
-```text
-CREATED
+```powershell
+docker compose exec postgres psql -U aprovexa -d aprovexa -c "SELECT id, request_id, previous_status, new_status, changed_by, changed_at FROM request_history ORDER BY id;"
 ```
 
-Then execute:
+Inspect comments:
 
-```text
-POST /api/v1/requests/{id}/submit
-POST /api/v1/requests/{id}/approve
+```powershell
+docker compose exec postgres psql -U aprovexa -d aprovexa -c "SELECT id, request_id, author, content, created_at FROM request_comments ORDER BY id;"
 ```
 
-Expected lifecycle:
+## Automated tests in V2
 
-```text
-CREATED → IN_REVIEW → APPROVED
-```
+V2 keeps the V1 unit/MVC suite and adds real PostgreSQL integration coverage for:
 
-Calling `approve` directly from `CREATED` must return `409 Conflict`.
+- Flyway creation of the complete schema;
+- Flyway migration history;
+- database constraints;
+- filtered request queries and stable pagination;
+- transition history persistence;
+- database-level history immutability;
+- comment persistence and pagination;
+- rollback of a request status change when the audit insert fails.
 
-## Automated tests included in V1
+Testcontainers uses the same PostgreSQL major version as the local Compose environment.
 
-- Request lifecycle unit tests.
-- Invalid transition tests.
-- Service tests with mocked persistence.
-- MVC controller tests for `201`, `400` and `404` behaviour.
-
-The database itself is still validated manually against PostgreSQL in V1. Repository integration tests with real PostgreSQL/Testcontainers are introduced in V2 as planned.
-
-## V1 validation status
+## V2 validation status
 
 | Check | Status |
 | --- | --- |
-| Request lifecycle tests | ✅ Passed locally via `mvnw clean verify` |
-| Controller tests | ✅ Passed locally via `mvnw clean verify` |
+| Full Maven test suite | ✅ 25 tests, 0 failures, 0 errors, 0 skipped |
+| Unit and MVC regression suite | ✅ Passed |
+| Flyway migration on empty PostgreSQL | ✅ V1 and V2 applied successfully |
+| Second startup with no schema changes | ✅ Schema history unchanged |
+| Database constraints | ✅ Covered by PostgreSQL integration tests |
+| Immutable history | ✅ Integration test and direct PostgreSQL `UPDATE` rejection |
+| Transaction rollback | ✅ Covered by integration test |
+| Repository tests with Testcontainers | ✅ PostgreSQL 17 container passed |
+| Comments and history through Swagger | ✅ Manually validated |
+| Direct `psql` inspection | ✅ Tables, migrations, history and comments verified |
+| pgAdmin inspection | ✅ Schema and persisted data visually verified |
 | `mvnw clean verify` | ✅ `BUILD SUCCESS` |
-| PostgreSQL startup | ✅ PostgreSQL healthy and JPA/Hikari connection verified |
-| Java 21 runtime | ✅ IntelliJ runtime corrected and verified on Java 21.0.12 |
-| Swagger UI / OpenAPI | ✅ Swagger UI loaded and request endpoints discovered by springdoc |
-| CRUD through Swagger | ⏳ Pending manual validation |
-| Valid transitions | ✅ `CREATED → IN_REVIEW → APPROVED` validated in Swagger |
-| Invalid transition → `409` | ✅ Re-approving an `APPROVED` request correctly returned `409 Conflict` |
-| Pagination and filters | ⏳ Pending manual validation |
 | GitHub Actions | ⏳ Pending pull request |
 
-## Git workflow for V1
+## Git workflow for V2
 
 Development branch:
 
 ```text
-feature/v1-request-management-rest-api
+feature/v2-persistence-and-audit
 ```
 
-Planned main implementation commit:
+Planned implementation commit:
 
 ```text
-feat(v1): implement request management API
+feat(v2): add migrations and request audit
 ```
 
-Target tag after all validation and merge steps succeed:
+Target tag after all gates succeed:
 
 ```text
-v1.0.0
+v2.0.0
 ```
 
-V1 is not considered closed until local tests, manual API checks, CI and the final README state are all validated.
+All local and manual V2 gates are validated. V2 remains open only until the pull request passes GitHub Actions, the README is marked closed, the branch is merged to `main`, and tag `v2.0.0` is created.

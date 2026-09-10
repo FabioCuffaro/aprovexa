@@ -3,6 +3,7 @@ package com.aprovexa.request.controller;
 import com.aprovexa.common.error.RequestNotFoundException;
 import com.aprovexa.request.dto.CreateRequestRequest;
 import com.aprovexa.request.dto.RequestResponse;
+import com.aprovexa.request.dto.TransitionRequest;
 import com.aprovexa.request.model.RequestStatus;
 import com.aprovexa.request.model.RequestType;
 import com.aprovexa.request.service.RequestService;
@@ -90,5 +91,40 @@ class RequestControllerTest {
         mockMvc.perform(get("/api/v1/requests/99"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("REQUEST_NOT_FOUND"));
+    }
+
+    @Test
+    void transitionRequiresActorPayload() throws Exception {
+        mockMvc.perform(post("/api/v1/requests/1/submit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"actor":""}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+    }
+
+    @Test
+    void submitPassesActorToService() throws Exception {
+        Instant now = Instant.parse("2026-09-08T08:00:00Z");
+        when(requestService.submit(any(Long.class), any(TransitionRequest.class))).thenReturn(new RequestResponse(
+                1L,
+                RequestType.PURCHASE,
+                RequestStatus.IN_REVIEW,
+                "Development laptop",
+                "Laptop required for backend development work",
+                null,
+                "Laura",
+                now,
+                now
+        ));
+
+        mockMvc.perform(post("/api/v1/requests/1/submit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"actor":"Laura"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_REVIEW"));
     }
 }

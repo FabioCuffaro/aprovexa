@@ -1,10 +1,18 @@
 package com.aprovexa.request.service;
 
 import com.aprovexa.common.error.RequestNotFoundException;
+import com.aprovexa.request.comment.RequestComment;
+import com.aprovexa.request.comment.RequestCommentRepository;
+import com.aprovexa.request.dto.CreateRequestCommentRequest;
 import com.aprovexa.request.dto.CreateRequestRequest;
 import com.aprovexa.request.dto.PageResponse;
+import com.aprovexa.request.dto.RequestCommentResponse;
+import com.aprovexa.request.dto.RequestHistoryResponse;
 import com.aprovexa.request.dto.RequestResponse;
+import com.aprovexa.request.dto.TransitionRequest;
 import com.aprovexa.request.dto.UpdateRequestRequest;
+import com.aprovexa.request.history.RequestHistory;
+import com.aprovexa.request.history.RequestHistoryRepository;
 import com.aprovexa.request.model.Request;
 import com.aprovexa.request.model.RequestStatus;
 import com.aprovexa.request.model.RequestType;
@@ -16,7 +24,9 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.Set;
+import java.util.function.Consumer;
 
 @Service
 @Transactional(readOnly = true)
@@ -27,9 +37,17 @@ public class RequestService {
     );
 
     private final RequestRepository requestRepository;
+    private final RequestHistoryRepository requestHistoryRepository;
+    private final RequestCommentRepository requestCommentRepository;
 
-    public RequestService(RequestRepository requestRepository) {
+    public RequestService(
+            RequestRepository requestRepository,
+            RequestHistoryRepository requestHistoryRepository,
+            RequestCommentRepository requestCommentRepository
+    ) {
         this.requestRepository = requestRepository;
+        this.requestHistoryRepository = requestHistoryRepository;
+        this.requestCommentRepository = requestCommentRepository;
     }
 
     @Transactional
@@ -62,18 +80,7 @@ public class RequestService {
             sort = sort.and(Sort.by(Sort.Direction.ASC, "id"));
         }
         Pageable pageable = PageRequest.of(page, size, sort);
-
-        Page<Request> result;
-        if (type != null && status != null) {
-            result = requestRepository.findByTypeAndStatus(type, status, pageable);
-        } else if (type != null) {
-            result = requestRepository.findByType(type, pageable);
-        } else if (status != null) {
-            result = requestRepository.findByStatus(status, pageable);
-        } else {
-            result = requestRepository.findAll(pageable);
-        }
-
+        Page<Request> result = requestRepository.search(type, status, pageable);
         return PageResponse.from(result.map(this::toResponse));
     }
 
@@ -97,31 +104,77 @@ public class RequestService {
     }
 
     @Transactional
-    public RequestResponse submit(Long id) {
-        Request request = getEntity(id);
-        request.submit();
-        return toResponse(request);
+    public RequestResponse submit(Long id, TransitionRequest input) {
+        return transition(id, input.actor(), Request::submit);
     }
 
     @Transactional
-    public RequestResponse approve(Long id) {
-        Request request = getEntity(id);
-        request.approve();
-        return toResponse(request);
+    public RequestResponse approve(Long id, TransitionRequest input) {
+        return transition(id, input.actor(), Request::approve);
     }
 
     @Transactional
-    public RequestResponse reject(Long id) {
-        Request request = getEntity(id);
-        request.reject();
-        return toResponse(request);
+    public RequestResponse reject(Long id, TransitionRequest input) {
+        return transition(id, input.actor(), Request::reject);
     }
 
     @Transactional
-    public RequestResponse cancel(Long id) {
+    public RequestResponse cancel(Long id, TransitionRequest input) {
+        return transition(id, input.actor(), Request::cancel);
+    }
+
+    @Transactional
+    public RequestCommentResponse addComment(Long id, CreateRequestCommentRequest input) {
         Request request = getEntity(id);
-        request.cancel();
+        RequestComment comment = new RequestComment(
+                request,
+                input.author().trim(),
+                input.content().trim()
+        );
+        return toCommentResponse(requestCommentRepository.save(comment));
+    }
+
+    public PageResponse<RequestCommentResponse> findComments(Long id, int page, int size) {
+        ensureExists(id);
+        Pageable pageable = PageRequest.of(
+                page,
+                size,
+                Sort.by(Sort.Direction.ASC, "createdAt")
+                        .and(Sort.by(Sort.Direction.ASC, "id"))
+        );
+        return PageResponse.from(
+                requestCommentRepository.findPageByRequestId(id, pageable)
+                        .map(this::toCommentResponse)
+        );
+    }
+
+    public List<RequestHistoryResponse> findHistory(Long id) {
+        ensureExists(id);
+        return requestHistoryRepository.findTimelineByRequestId(id).stream()
+                .map(this::toHistoryResponse)
+                .toList();
+    }
+
+    private RequestResponse transition(Long id, String actor, Consumer<Request> transition) {
+        Request request = getEntity(id);
+        RequestStatus previousStatus = request.getStatus();
+        transition.accept(request);
+        RequestStatus newStatus = request.getStatus();
+
+        requestHistoryRepository.save(new RequestHistory(
+                request,
+                previousStatus,
+                newStatus,
+                actor.trim()
+        ));
+
         return toResponse(request);
+    }
+
+    private void ensureExists(Long id) {
+        if (!requestRepository.existsById(id)) {
+            throw new RequestNotFoundException(id);
+        }
     }
 
     private Request getEntity(Long id) {
@@ -157,6 +210,27 @@ public class RequestService {
                 request.getRequester(),
                 request.getCreatedAt(),
                 request.getUpdatedAt()
+        );
+    }
+
+    private RequestCommentResponse toCommentResponse(RequestComment comment) {
+        return new RequestCommentResponse(
+                comment.getId(),
+                comment.getRequest().getId(),
+                comment.getAuthor(),
+                comment.getContent(),
+                comment.getCreatedAt()
+        );
+    }
+
+    private RequestHistoryResponse toHistoryResponse(RequestHistory history) {
+        return new RequestHistoryResponse(
+                history.getId(),
+                history.getRequest().getId(),
+                history.getPreviousStatus(),
+                history.getNewStatus(),
+                history.getChangedBy(),
+                history.getChangedAt()
         );
     }
 }
