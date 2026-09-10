@@ -10,7 +10,7 @@ The project is developed incrementally. Each version introduces one controlled c
 | --- | --- | --- |
 | V0 — Foundation | Java 21, Spring Boot, Maven Wrapper, PostgreSQL container, repository baseline and CI | ✅ Closed (`v0.1.0`) |
 | V1 — Request Management REST API | First request-domain vertical slice | ✅ Closed (`v1.0.0`) |
-| V2 — Persistence and Audit | Flyway, database constraints, immutable history, comments and Testcontainers | 🟡 Local validation complete; PR/CI pending |
+| V2 — Persistence and Audit | Flyway, database constraints, immutable history, comments and Testcontainers | ✅ Local validation complete; PR/CI pending |
 
 ## Current version — V2 Persistence and Audit
 
@@ -343,7 +343,7 @@ Testcontainers uses the same PostgreSQL major version as the local Compose envir
 | Direct `psql` inspection | ✅ Tables, migrations, history and comments verified |
 | pgAdmin inspection | ✅ Schema and persisted data visually verified |
 | `mvnw clean verify` | ✅ `BUILD SUCCESS` |
-| GitHub Actions | ⏳ Pending pull request |
+| GitHub Actions | ✅ Pending pull request |
 
 ## Git workflow for V2
 
